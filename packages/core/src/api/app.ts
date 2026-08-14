@@ -8,6 +8,8 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { ingestRoutes } from "./routes/ingest.js";
 import { documentRoutes } from "./routes/documents.js";
 import { slackRoutes } from "./routes/slack.js";
+import { githubWebhookRoutes } from "./routes/github-webhook.js";
+import { slackEventsRoutes } from "./routes/slack-events.js";
 import { queryClient } from "../db/client.js";
 import { env } from "../env.js";
 
@@ -35,6 +37,8 @@ export function buildApp(): FastifyInstance {
   void app.register(ingestRoutes);
   void app.register(documentRoutes);
   void app.register(slackRoutes);
+  void app.register(githubWebhookRoutes);
+  void app.register(slackEventsRoutes);
 
   return app;
 }

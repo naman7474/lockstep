@@ -486,8 +486,8 @@ export async function upsertDocumentsFromSweep(connectionId: string, docs: Swept
 
       const now = new Date();
       let doc: typeof sourceDocuments.$inferSelect;
-      let stateChanged = false;
-      let becameActive = false;
+      let stateChanged: boolean;
+      let becameActive: boolean;
       if (!existing) {
         const routedProject = projectFor(d.containerRef);
         if (!routedProject) {

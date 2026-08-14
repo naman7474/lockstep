@@ -40,9 +40,11 @@ DECLARE child_tables text[] := ARRAY[
   'source_connections','ingest_allowlist','ingest_watermarks','ingest_artifacts',
   'decision_provenances','graph_nodes','graph_edges',
   'source_documents','document_state_mappings','conflicts','writebacks',
-  'decision_embeddings'
+  'decision_embeddings','ingest_events'
 ];
-DECLARE system_tables text[] := ARRAY['principals','access_tokens','github_credentials'];
+-- scheduled_jobs is cross-org by design: every job runs withSystem and iterates orgs itself
+-- (exactly like the expiry/digest endpoints it schedules) — so it takes the system-only policy.
+DECLARE system_tables text[] := ARRAY['principals','access_tokens','github_credentials','scheduled_jobs'];
 BEGIN
   -- tenant root: scope on id
   EXECUTE 'ALTER TABLE orgs ENABLE ROW LEVEL SECURITY';

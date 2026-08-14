@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { withSystem, withOrg } from "../db/rls.js";
 import { members, projects } from "../db/schema.js";
@@ -6,11 +7,16 @@ import { productLayerEnabled } from "../documents/document-service.js";
 import { getProjectRoleTx, projectVisibility } from "../auth/permissions.js";
 import { env } from "../env.js";
 
-/** Gate the worker endpoints on the shared ingest service token. */
+/** Gate the worker endpoints on the shared ingest service token (timing-safe compare). */
 export function workerAuthed(req: FastifyRequest, reply: FastifyReply): boolean {
   const expected = env.LOCKSTEP_INGEST_TOKEN;
   const got = req.headers["x-lockstep-ingest-token"];
-  if (!expected || got !== expected) {
+  // sha256 both sides → constant length → timingSafeEqual never throws and leaks nothing.
+  const matches =
+    Boolean(expected) &&
+    typeof got === "string" &&
+    timingSafeEqual(createHash("sha256").update(got).digest(), createHash("sha256").update(expected!).digest());
+  if (!matches) {
     reply.code(401).send({ error: "ingest token required" });
     return false;
   }

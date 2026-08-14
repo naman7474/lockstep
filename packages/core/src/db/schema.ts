@@ -748,3 +748,57 @@ export const writebacks = pgTable(
     byStatus: index("ix_writebacks_status").on(t.status),
   }),
 );
+
+/**
+ * Slack Events ingress queue (gateway). Core stores only REFS — channel, ts, thread key — never
+ * message text; the worker re-fetches the thread via the connector so unit granularity (and the
+ * ingest_artifacts contentHash barrier) matches sweeps exactly. The REAL dedupe is a partial unique
+ * index in SQL (0008): (connection_id, thread_key) WHERE status IN ('queued','processing') — Drizzle
+ * can't express partials, so only the plain lookup index is modeled here.
+ */
+export const ingestEvents = pgTable(
+  "ingest_events",
+  {
+    id: id(),
+    orgId: orgId(),
+    projectId: uuid("project_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    sourceRef: text("source_ref").notNull(), // Slack channel id
+    threadKey: text("thread_key").notNull(), // `${channel}/${thread_ts ?? ts}` — the sweep's unit key
+    latestEventTs: text("latest_event_ts").notNull(), // newest Slack ts seen for this unit
+    status: text("status").notNull().default("queued"), // queued | processing | done | failed
+    attempts: integer("attempts").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    createdAt: createdAt(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    byStatus: index("ix_ingest_events_status").on(t.status, t.createdAt),
+  }),
+);
+
+/**
+ * Persistent scheduler (gateway). SYSTEM table — jobs are cross-org (each kind runs withSystem and
+ * iterates orgs, like expiry/digests already do), so it carries the system-only RLS policy, not
+ * org isolation. Mutable: the worker claims due rows with a lease (locked_until) and reschedules
+ * run_at by interval_seconds on completion.
+ */
+export const scheduledJobs = pgTable(
+  "scheduled_jobs",
+  {
+    id: id(),
+    kind: text("kind").notNull(), // expiry | weekly_digest | writeback_drain
+    singletonKey: text("singleton_key").notNull(),
+    runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
+    intervalSeconds: integer("interval_seconds"), // null = one-shot
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    lastStatus: text("last_status"),
+    lastError: text("last_error"),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    uqSingleton: uniqueIndex("uq_scheduled_job_singleton").on(t.singletonKey),
+  }),
+);

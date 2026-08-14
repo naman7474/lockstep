@@ -25,6 +25,7 @@ import { withOrg } from "../../db/rls.js";
 import { projects } from "../../db/schema.js";
 import { deriveGraph, listGraph, addNode, addEdge } from "../../graph/graph-service.js";
 import { reconcileSlackMembersByEmail } from "../../auth/auth-service.js";
+import { claimPendingEvents, completeEvents } from "../../ingest/ingest-events-service.js";
 
 export async function ingestRoutes(app: FastifyInstance): Promise<void> {
   /* ─── Worker endpoints (service-token auth) ─── */
@@ -92,6 +93,20 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     }
     await setWatermark(b.orgId, b.connectionId, b.sourceRef, b.cursor);
     return { ok: true };
+  });
+
+  // Gateway: the worker's fast loop claims Slack-event units (lease + attempts) and acks them.
+  app.get("/ingest/events/pending", async (req, reply) => {
+    if (!workerAuthed(req, reply)) return;
+    return { batches: await claimPendingEvents() };
+  });
+
+  app.post("/ingest/events/done", async (req, reply) => {
+    if (!workerAuthed(req, reply)) return;
+    const b = req.body as { ids?: string[]; ok?: boolean };
+    if (!Array.isArray(b?.ids) || typeof b?.ok !== "boolean")
+      return reply.code(400).send({ error: "ids[] + ok required" });
+    return completeEvents(b.ids, b.ok);
   });
 
   // The worker hands over a Slack workspace's users (id + email from a Composio users-list call) so

@@ -6,6 +6,7 @@ import { writeAudit } from "../../audit/audit-service.js";
 import { workerAuthed, ensureMember, requireProductLayer, ensureProjectVisible, canReadProject, requireProjectRole } from "../guards.js";
 import { getProjectRoleTx } from "../../auth/permissions.js";
 import { setMemberSlackId } from "../../auth/auth-service.js";
+import { claimDueJobs, completeJob } from "../../ledger/jobs-service.js";
 import {
   registerDocument,
   listDocuments,
@@ -51,6 +52,21 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.post("/internal/digests/weekly/run", async (req, reply) => {
     if (!workerAuthed(req, reply)) return;
     return enqueueWeeklyDigests();
+  });
+
+  // Gateway scheduler: the worker's fast loop claims due jobs (lease + SKIP LOCKED) and executes
+  // each kind via the existing /internal endpoints above, then completes (reschedules) here.
+  app.post("/internal/jobs/claim", async (req, reply) => {
+    if (!workerAuthed(req, reply)) return;
+    return { jobs: await claimDueJobs() };
+  });
+
+  app.post("/internal/jobs/:id/complete", async (req, reply) => {
+    if (!workerAuthed(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const b = req.body as { ok?: boolean; error?: string };
+    if (typeof b?.ok !== "boolean") return reply.code(400).send({ error: "ok required" });
+    return completeJob(id, b.ok, b.error);
   });
 
   app.post("/internal/documents/upsert", async (req, reply) => {

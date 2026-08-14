@@ -11,8 +11,20 @@ import {
   conflicts,
   repos,
   members,
+  projects,
 } from "../db/schema.js";
 import { withSystem } from "../db/rls.js";
+import { projectVisibility, getProjectRoleTx } from "../auth/permissions.js";
+
+/**
+ * Defense-in-depth for walled projects (gateway): even if an inbox item was delivered before the
+ * member lost access (or by a pre-tiering fan-out), a non-member of a walled project reads empty.
+ */
+async function walledAndNotMemberTx(tx: Tx, projectId: string, memberId: string): Promise<boolean> {
+  const project = (await tx.select().from(projects).where(eq(projects.id, projectId)).limit(1))[0];
+  if (projectVisibility(project?.settings) !== "walled") return false;
+  return (await getProjectRoleTx(tx, projectId, memberId)) === null;
+}
 
 export interface InboxView {
   unread: number;
@@ -43,6 +55,8 @@ export async function readInbox(
   ctx: { memberId: string; repoId: string; projectId: string },
 ): Promise<InboxView> {
   return withOrg(orgId, async (tx) => {
+    if (await walledAndNotMemberTx(tx, ctx.projectId, ctx.memberId))
+      return { unread: 0, changes: [], questions: [], tasks: [], decisions: [], conflicts: [] };
     const inbox = (
       await tx
         .select()
@@ -192,6 +206,8 @@ export async function peekInbox(
   ctx: { memberId: string; repoId: string; projectId: string },
 ): Promise<InboxPeek> {
   return withOrg(orgId, async (tx) => {
+    if (await walledAndNotMemberTx(tx, ctx.projectId, ctx.memberId))
+      return { unread: 0, questions: 0, tasks: 0, changes: 0, decisions: 0, conflicts: 0 };
     const inbox = (
       await tx
         .select()
@@ -240,6 +256,8 @@ export async function peekInboxByRemote(
         .limit(1)
     )[0];
     if (!member) return { unread: 0, questions: 0, tasks: 0, changes: 0, decisions: 0, conflicts: 0 };
+    if (await walledAndNotMemberTx(tx, repo.projectId, member.id))
+      return { unread: 0, questions: 0, tasks: 0, changes: 0, decisions: 0, conflicts: 0 };
 
     const inbox = (
       await tx

@@ -57,6 +57,13 @@
       "when": 1794700000000,
       "tag": "0007_decision_embeddings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794800000000,
+      "tag": "0008_gateway",
+      "breakpoints": true
     }
   ]
 }

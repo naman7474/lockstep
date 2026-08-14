@@ -19,6 +19,10 @@ jobs:
     env:
       DATABASE_URL: postgres://lockstep:lockstep@localhost:5432/lockstep
       LOCKSTEP_INGEST_TOKEN: test-ingest-secret
+      # Gateway webhook route tests exercise their signed full-flow paths only when these are set.
+      GITHUB_WEBHOOK_SECRET: test-github-secret
+      LOCKSTEP_SLACK_SIGNING_SECRET: test-slack-secret
+      SLACK_BOT_TOKEN: xoxb-test
 
     services:
       postgres:

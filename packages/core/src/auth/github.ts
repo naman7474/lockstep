@@ -136,6 +136,27 @@ export async function installationToken(installationId: number): Promise<string>
   return ((await res.json()) as { token: string }).token;
 }
 
+/** Changed files of a PR via an installation token (webhook path). Paginated, capped at 300. */
+export async function listPrFiles(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<Array<{ filename: string; status: string }>> {
+  const token = await installationToken(installationId);
+  const out: Array<{ filename: string; status: string }> = [];
+  for (let page = 1; page <= 3; page++) {
+    const res = await fetch(`${API}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`, {
+      headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`pr files ${res.status}`);
+    const batch = (await res.json()) as Array<{ filename: string; status: string }>;
+    out.push(...batch.map((f) => ({ filename: f.filename, status: f.status })));
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
 /** Read a single file (e.g. CODEOWNERS) via an installation token. Returns null on 404. */
 export async function getFile(
   installationId: number,
