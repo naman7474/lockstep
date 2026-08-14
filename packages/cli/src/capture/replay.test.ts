@@ -116,3 +116,18 @@ test("project principles lead the briefing, above the binding-decisions section 
     formatReplay(null, decisions, null),
   );
 });
+
+test("decision-pack nudge: missing/stale render one trailing line; fresh or absent renders none", () => {
+  assert.match(
+    formatReplay(null, decisions, null, "missing"),
+    /\n📦 No decision pack installed — run `lockstep pack` \(or call refresh_decision_pack\)\.$/,
+  );
+  assert.match(
+    formatReplay(null, decisions, null, "stale"),
+    /\n📦 Decision pack is stale \(the ledger changed\) — refresh with refresh_decision_pack or `lockstep pack`\.$/,
+  );
+  // Fresh pack (null state) and old cores (no pack field → caller passes null) are byte-identical to before.
+  assert.equal(formatReplay(null, decisions, null, null), formatReplay(null, decisions, null));
+  // The nudge alone still produces a briefing (never "nothing new" while the pack is missing).
+  assert.match(formatReplay(null, null, null, "missing"), /^Lockstep:\n📦 No decision pack installed/);
+});

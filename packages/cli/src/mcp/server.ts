@@ -5,6 +5,7 @@ import { registerSession } from "./session.js";
 import { call } from "./api.js";
 import { gitRemote } from "./git.js";
 import { writeFeatureContext } from "../capture/feature-context.js";
+import { writeDecisionPack, packPath, type PackResp } from "../pack.js";
 
 /**
  * The per-session MCP server (one process per agent session). Registers the session,
@@ -98,6 +99,17 @@ export async function runMcpServer(): Promise<void> {
     featureCtx = a.capabilityRef;
     if (remote) writeFeatureContext(remote, a.capabilityRef);
     return ok({ ok: true, capabilityRef: a.capabilityRef });
+  });
+  // Local FS side effect (like set_feature_context): rewrites the generated decision-pack skill.
+  server.tool("refresh_decision_pack", {}, async () => {
+    const p = await call<PackResp>("GET", "/decision-pack", sid);
+    const results = await writeDecisionPack(process.cwd(), p.markdown, false);
+    return ok({
+      packHash: p.packHash,
+      path: packPath(process.cwd()),
+      changed: results.some((r) => r.startsWith("wrote")),
+      counts: p.counts,
+    });
   });
 
   await server.connect(new StdioServerTransport());

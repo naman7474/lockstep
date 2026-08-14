@@ -72,6 +72,13 @@ This project uses Lockstep to coordinate multiple developers' coding agents on t
 - When you see a "[Lockstep]" notification, inform the user about the pending message(s).
 - The user decides whether to respond — don't auto-answer on their behalf.
 
+## Decision pack (compiled ledger knowledge)
+- \`.claude/skills/lockstep-decisions/SKILL.md\` is the **generated** compiled index of this project's
+  binding decisions, principles, and ratified product constraints — the uncapped counterpart to the
+  session briefing. Consult it before making or judging architectural decisions.
+- It is a build artifact: NEVER edit it by hand. When the session briefing says the pack is stale or
+  missing, call \`refresh_decision_pack\` (or tell the user to run \`lockstep pack\`).
+
 ## First-run onboarding & keeping the manifest current
 - If this repo has no \`lockstep.yaml\` (or you've added/removed routes or outbound service calls), run the
   \`/lockstep-setup\` skill. It scans the repo, auto-fills \`produces\`, and resolves \`consumes\` against the
@@ -142,4 +149,4 @@ Re-running \`lockstep scan\` diffs current code surfaces against \`lockstep.yaml
 
 export const CLAUDE_BLOCK = `## Lockstep (team coordination)
 IMPORTANT: On session start, BEFORE doing anything else, call \`inbox\` and \`decisions\`. If there are any open questions, tasks, or changes, you MUST tell the user immediately — do not skip this. Example: "You have 1 new question from a teammate: [question text]". Then proceed with the user's request.
-Before coding a shared/contract surface, \`query\` the ledger and obey binding decisions. After a change, summarize it, \`register_dependency\` for surfaces you call, and \`notify\`. IMPORTANT: a routine code change is captured automatically — do NOT log it as a decision. But whenever you or the user make a durable **rule or architectural choice** that will constrain future work, you MUST record it with \`propose_decision\` (\`decisionType: rule | architecture | principle\`) — include \`rationale\` (why) and \`alternatives\` (what was rejected) when known, and \`reviewAt\` (ISO date) when the decision is explicitly temporary. Project principles (\`decisionType: principle\`) are the team's standing decision criteria — apply them when judging new decisions. Ask code/repo questions with \`ask\` (urgent if blocking). When you see a "[Lockstep]" notification, inform the user about pending messages. If this repo has no \`lockstep.yaml\` (or you changed its routes/outbound calls), run the \`/lockstep-setup\` skill to (re)generate it — never hand-edit \`lockstep.yaml\`. See the \`lockstep\` skill for detail.`;
+Before coding a shared/contract surface, \`query\` the ledger and obey binding decisions. After a change, summarize it, \`register_dependency\` for surfaces you call, and \`notify\`. IMPORTANT: a routine code change is captured automatically — do NOT log it as a decision. But whenever you or the user make a durable **rule or architectural choice** that will constrain future work, you MUST record it with \`propose_decision\` (\`decisionType: rule | architecture | principle\`) — include \`rationale\` (why) and \`alternatives\` (what was rejected) when known, and \`reviewAt\` (ISO date) when the decision is explicitly temporary. Project principles (\`decisionType: principle\`) are the team's standing decision criteria — apply them when judging new decisions. Ask code/repo questions with \`ask\` (urgent if blocking). When you see a "[Lockstep]" notification, inform the user about pending messages. If this repo has no \`lockstep.yaml\` (or you changed its routes/outbound calls), run the \`/lockstep-setup\` skill to (re)generate it — never hand-edit \`lockstep.yaml\`. The \`lockstep-decisions\` skill is the generated compiled decision pack — consult it for settled rules, never edit it, and call \`refresh_decision_pack\` when the briefing says it's stale. See the \`lockstep\` skill for detail.`;

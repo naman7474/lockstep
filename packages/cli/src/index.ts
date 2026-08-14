@@ -25,6 +25,7 @@ usage: lockstep <command>
   onboard [--project <name>]                        one step: init + connect (for a teammate joining a repo)
   scan  [--json] [--apply] [--dry-run]              scan the repo → propose lockstep.yaml (produces + graph-resolved consumes)
   sync                                              push lockstep.yaml (produces + consumes) to the graph, no rescan
+  pack  [--check] [--dry-run]                       write the compiled decision pack skill (--check: exit 1 if stale)
   invite <github-handle>                            invite a teammate to this repo's project
   status                                            show auth + config health
   doctor                                            diagnose vendor config
@@ -71,6 +72,13 @@ async function main(): Promise<void> {
       await runInit({ vendor: val("vendor"), scope: (val("scope") as Scope) ?? "project", dryRun: has("dry-run") });
       if (has("dry-run")) return;
       await runConnect({ org: val("org"), project: val("project") });
+      // Best-effort: seed the compiled decision pack now that the repo is connected. Never fatal.
+      try {
+        const { runPack } = await import("./pack.js");
+        await runPack({});
+      } catch {
+        /* pack requires a reachable core with /decision-pack — the session-start nudge covers it */
+      }
       console.log("\nOnboarded. Run `lockstep scan` to propose this repo's dependencies.");
       return;
     }
@@ -81,6 +89,10 @@ async function main(): Promise<void> {
     case "sync": {
       const { runSync } = await import("./scan.js");
       return runSync();
+    }
+    case "pack": {
+      const { runPack } = await import("./pack.js");
+      return runPack({ check: has("check"), dryRun: has("dry-run") });
     }
     case "invite": {
       const handle = argv[1];

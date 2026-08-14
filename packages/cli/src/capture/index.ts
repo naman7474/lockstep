@@ -36,7 +36,11 @@ export interface BriefingResp {
   /** Phase P: binding decisionType=principle decisions — the team's standing decision criteria. */
   principles?: Array<{ line: string; impact: number }>;
   principlesOverflow?: number;
+  /** Compiled decision-pack hash — compared against the locally-written pack for the staleness nudge. */
+  pack?: { hash: string };
 }
+
+export type PackState = "stale" | "missing" | null;
 
 /** Highest-blast-radius first, so the session-start briefing leads with what matters most. */
 const byImpact = <T extends { impact?: number }>(a: T, b: T): number => (b.impact ?? 0) - (a.impact ?? 0);
@@ -46,6 +50,7 @@ export function formatReplay(
   inbox: InboxResp | null,
   decisions: DecisionsResp | null,
   briefing?: BriefingResp | null,
+  packState?: PackState,
 ): string {
   const lines: string[] = [];
   const changes = [...(inbox?.changes ?? [])].sort(byImpact);
@@ -103,6 +108,11 @@ export function formatReplay(
     if ((briefing?.overflow ?? 0) > 0)
       lines.push(`  • (+${briefing?.overflow} product constraints in scope — get_product_context)`);
   }
+  // Read-only staleness nudge — the hook never writes the pack itself (hook doctrine).
+  if (packState === "missing")
+    lines.push("📦 No decision pack installed — run `lockstep pack` (or call refresh_decision_pack).");
+  else if (packState === "stale")
+    lines.push("📦 Decision pack is stale (the ledger changed) — refresh with refresh_decision_pack or `lockstep pack`.");
   return lines.length ? `Lockstep:\n${lines.join("\n")}` : "Lockstep: nothing new.";
 }
 
@@ -151,7 +161,13 @@ export async function runCapture(event: string): Promise<void> {
       const inbox = await call<InboxResp>("GET", "/inbox", session.sessionId).catch(() => null);
       const decisions = await call<DecisionsResp>("GET", "/decisions", session.sessionId).catch(() => null);
       const briefing = await call<BriefingResp>("GET", "/briefing", session.sessionId).catch(() => null);
-      const replay = formatReplay(inbox, decisions, briefing);
+      let packState: PackState = null;
+      if (briefing?.pack?.hash) {
+        const { readLocalPackHash } = await import("../pack.js");
+        const local = readLocalPackHash(cwd);
+        packState = local === null ? "missing" : local === briefing.pack.hash ? null : "stale";
+      }
+      const replay = formatReplay(inbox, decisions, briefing, packState);
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: replay },
