@@ -30,8 +30,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Release gates on the published package's own tests only — @lockstep/core's suite needs a
+      # real Postgres (ci.yml provides one on every push; this workflow ships lockstep-cli).
       - name: Test
-        run: npm run test
+        run: npm run test -w lockstep-cli
 
       - name: Publish lockstep-cli to npm
         if: ${{ env.NPM_TOKEN != '' }}

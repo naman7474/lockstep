@@ -1,6 +1,6 @@
 {
   "name": "lockstep-cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "mcpName": "io.github.lockstep-team-agent/lockstep",
   "description": "Keep your team's AI coding agents in lockstep — shared decisions, contracts, ownership and dependencies across repos.",
   "type": "module",

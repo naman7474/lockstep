@@ -7,13 +7,13 @@
     "source": "github"
   },
   "websiteUrl": "https://www.getlockstep.dev",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "lockstep-cli",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },

@@ -11,6 +11,8 @@ package is the only one published to npm; its npm version tracks the repo versio
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-14
+
 ### Added
 
 - **Compiled decision packs** — `GET /decision-pack` renders the project's settled knowledge
