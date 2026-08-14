@@ -61,35 +61,65 @@ export async function runFunnel(opts: {
   batchExtractFn?: (items: Array<{ externalId: string; text: string }>) => Promise<Map<string, Extraction>>;
 }): Promise<FunnelResult> {
   const log = opts.log ?? (() => {});
-  const source = opts.tool ?? "slack";
-  const recall = opts.recallFn ?? defaultRecall;
-  const extract = opts.extractFn ?? defaultExtract;
-  const batchExtract = opts.batchExtractFn ?? extractBatch;
-  const stats: FunnelStats = { seen: 0, recalled: 0, proposed: 0, questions: 0, discarded: 0 };
-  const cursors: Record<string, string> = {};
 
-  // Phase 1 — collect units + advance cursors + cheap recall filter.
+  // Phase 1 — collect units + advance cursors.
   // #10: each source routes to ITS allowlist row's project — remember it per sourceRef.
   const projectFor = new Map<string, string>();
   for (const src of opts.sources) projectFor.set(src.sourceRef, src.projectId ?? opts.projectId);
-  type Survivor = { unit: Unit; text: string };
-  const survivors: Survivor[] = [];
+  const cursors: Record<string, string> = {};
+  const collected: Array<{ unit: Unit; projectId: string }> = [];
   for (const src of opts.sources) {
     const units = await opts.connector.listUnitsSince(src.sourceRef, src.cursor);
     log(`  ${src.sourceRef}: ${units.length} unit(s) since cursor`);
     let maxTs = src.cursor ?? "0";
     for (const u of units) {
-      stats.seen++;
       if (u.ts > maxTs) maxTs = u.ts;
-      const text = redactSecrets(u.text);
-      if (!(await recall(text, opts.useHaiku ?? true))) {
-        stats.discarded++;
-        continue;
-      }
-      stats.recalled++;
-      survivors.push({ unit: u, text });
+      collected.push({ unit: u, projectId: projectFor.get(u.sourceRef) ?? opts.projectId });
     }
     cursors[src.sourceRef] = maxTs;
+  }
+
+  const { items, stats } = await runFunnelOnUnits({ ...opts, units: collected });
+  return { items, cursors, stats };
+}
+
+/**
+ * The distillation phases (recall → extract → gate → scope) over pre-collected units. Shared by the
+ * sweep (which collects via cursors above) and the gateway event drain (which re-fetches one thread
+ * per Slack event) — same unit granularity, same contentHash, so fileProposedDecision's
+ * (connectionId, externalId, contentHash) barrier dedupes overlap between the two paths.
+ */
+export async function runFunnelOnUnits(opts: {
+  units: Array<{ unit: Unit; projectId: string }>;
+  orgId: string;
+  connectionId: string;
+  tool?: string;
+  useHaiku?: boolean;
+  batch?: boolean;
+  log?: (msg: string) => void;
+  recallFn?: (text: string, useHaiku: boolean) => Promise<boolean>;
+  extractFn?: (externalId: string, text: string) => Promise<Extraction>;
+  batchExtractFn?: (items: Array<{ externalId: string; text: string }>) => Promise<Map<string, Extraction>>;
+}): Promise<{ items: ProposedItem[]; stats: FunnelStats }> {
+  const log = opts.log ?? (() => {});
+  const source = opts.tool ?? "slack";
+  const recall = opts.recallFn ?? defaultRecall;
+  const extract = opts.extractFn ?? defaultExtract;
+  const batchExtract = opts.batchExtractFn ?? extractBatch;
+  const stats: FunnelStats = { seen: 0, recalled: 0, proposed: 0, questions: 0, discarded: 0 };
+
+  // Cheap recall filter.
+  type Survivor = { unit: Unit; projectId: string; text: string };
+  const survivors: Survivor[] = [];
+  for (const { unit: u, projectId } of opts.units) {
+    stats.seen++;
+    const text = redactSecrets(u.text);
+    if (!(await recall(text, opts.useHaiku ?? true))) {
+      stats.discarded++;
+      continue;
+    }
+    stats.recalled++;
+    survivors.push({ unit: u, projectId, text });
   }
 
   // Phase 2 — extraction (batch or inline).
@@ -127,7 +157,7 @@ export async function runFunnel(opts: {
     const reviewAt = parseExpiresHint(x.review_hint ?? "", new Date());
     items.push({
       orgId: opts.orgId,
-      projectId: projectFor.get(u.sourceRef) ?? opts.projectId,
+      projectId: s.projectId,
       scopeKind: scope.scopeKind,
       scopeRef: scope.scopeRef,
       ruleText: x.rule_text,
@@ -158,5 +188,5 @@ export async function runFunnel(opts: {
     stats.proposed++;
     log(`    ✓ proposed [${scope.scopeRef}] ${x.rule_text.slice(0, 80)}`);
   }
-  return { items, cursors, stats };
+  return { items, stats };
 }

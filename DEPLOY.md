@@ -43,7 +43,10 @@ Railway project
 ## 4. Deploy `ingest` (the sweep worker)
 
 Without this service there is **no ingestion**: no Slack/Notion sweeps, no ratification digests,
-no weekly digests, no constraint expiry. It polls core on an interval (default 900s).
+no weekly digests, no constraint expiry. It runs **two loops**: the sweep (default 900s) and the
+gateway **fast loop** (default 60s, `--fast-interval`) that drains live Slack-event units and
+executes the scheduled jobs (`expiry` hourly, `weekly_digest` 6-hourly, `writeback_drain` every
+5 min — seeded by migration 0008).
 
 - **Add → GitHub Repo → same repo.** In the service settings point **Config File** at
   `railway.ingest.json` (Dockerfile `packages/ingest/Dockerfile`, restart ON_FAILURE).
@@ -67,6 +70,7 @@ Keep the blast radius small — each service gets only what it needs. **web hold
 | `DATABASE_URL` | ✓ | — | — |
 | `TOKEN_SIGNING_SECRET` | ✓ | — | — |
 | `GITHUB_APP_*` / `GITHUB_WEBHOOK_SECRET` | ✓ | — | — |
+| `LOCKSTEP_SLACK_SIGNING_SECRET` | ✓ (interactivity + events webhooks) | — | — |
 | `COMPOSIO_API_KEY` | ✓ (server-side OAuth initiate) | — | ✓ (sweep execution) |
 | `LOCKSTEP_INGEST_TOKEN` | ✓ | — | ✓ (must match) |
 | `ANTHROPIC_API_KEY` | — | — | ✓ |
@@ -75,7 +79,27 @@ Keep the blast radius small — each service gets only what it needs. **web hold
 | `LOCKSTEP_API_URL` | — | ✓ | ✓ |
 | `LOCKSTEP_WEB_URL` | — | ✓ (canonical URL; don't rely on x-forwarded-host) | ✓ (digest links) |
 
-## 5. Point the CLI at the deployed core
+## 5. Wire the live event ingress (gateway webhooks — both land on `core`)
+
+Both endpoints 503 until their secret is set, so this step is safe to do any time after core deploys.
+
+**GitHub (PR-merge → verified ledger changes):** in your GitHub App's settings on github.com
+(there is no in-repo manifest):
+- **Webhook URL** → `https://<core-public-url>/webhooks/github`
+- **Webhook secret** → the same value as core's `GITHUB_WEBHOOK_SECRET`
+- **Subscribe to events** → *Pull requests* (Contents: read is already required for CODEOWNERS).
+- Verify with the App's "Recent Deliveries → Redeliver" on the `ping` — expect `200 {pong:true}`.
+
+**Slack (live message ingestion):** in your first-party Lockstep Slack app at api.slack.com
+(the same app whose `LOCKSTEP_SLACK_SIGNING_SECRET`/`SLACK_BOT_TOKEN` you already use):
+- **Event Subscriptions → Enable**, Request URL `https://<core-public-url>/webhooks/slack/events`
+  (core answers the `url_verification` challenge).
+- **Bot events**: `message.channels` + `message.groups`.
+- **Invite the bot** to every allowlisted channel — Slack only delivers events for channels the
+  bot is in. Non-allowlisted channels are dropped at the door; the 15-min sweep remains the
+  self-healing backstop for anything events miss.
+
+## 6. Point the CLI at the deployed core
 
 On each developer machine:
 

@@ -258,6 +258,39 @@ export class ComposioConnector implements SourceConnector, DocumentConnector {
     return units;
   }
 
+  /**
+   * Gateway event drain: fetch ONE thread (root + replies) as a unit with the exact granularity of
+   * slackUnits — same externalId (`${channel}/${threadTs}`) and same text composition, so its
+   * contentHash matches what a sweep would produce and fileProposedDecision dedupes overlap.
+   * Returns null when the root message is gone (deleted) or the fetch fails.
+   */
+  async fetchThreadUnit(channel: string, threadTs: string): Promise<Unit | null> {
+    try {
+      const thread = await this.exec("SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION", { channel, ts: threadTs });
+      const messages = arr(thread.messages);
+      const root = messages.find((m) => str(m.ts) === threadTs) ?? messages[0];
+      if (!root || !str(root.ts)) return null;
+      const rootTs = str(root.ts);
+      const lines = [renderSlack(root)];
+      const authors = new Set<string>(author(root));
+      for (const r of messages) {
+        if (str(r.ts) === rootTs) continue;
+        lines.push(renderSlack(r));
+        author(r).forEach((a) => authors.add(a));
+      }
+      return {
+        externalId: `${channel}/${rootTs}`,
+        sourceRef: channel,
+        ts: str(messages[messages.length - 1]?.ts) || rootTs,
+        text: lines.join("\n"),
+        authors: [...authors],
+        permalink: str(root.permalink) || undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async jiraUnits(projectKey: string, cursor: string | null): Promise<Unit[]> {
     const since = this.sinceIso(cursor).slice(0, 10); // JQL date
     const jql = `project = "${projectKey}" AND updated >= "${since}" ORDER BY updated DESC`;

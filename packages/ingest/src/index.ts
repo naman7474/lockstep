@@ -9,6 +9,7 @@ import type { DocumentConnector, SourceConnector } from "./connectors/SourceConn
 import { runFunnel } from "./funnel.js";
 import { runDocFunnel } from "./docFunnel.js";
 import { drainWritebacks } from "./writeback.js";
+import { drainEvents } from "./events.js";
 import { runEval } from "./eval/run.js";
 import { runDocEval } from "./eval/run-docs.js";
 import type { SweptDoc } from "./client.js";
@@ -19,7 +20,9 @@ import type { SweptDoc } from "./client.js";
  *   lockstep-ingest channels --entity <projectId>        list Slack channels (to find allowlist ids)
  *   lockstep-ingest connect  --connection <id> --entity <projectId>   run Composio OAuth, finalize
  *   lockstep-ingest sweep    [--stub] [--no-haiku]        one-shot: fetch → distill → propose
- *   lockstep-ingest serve    [--interval <sec>]           loop sweep on an interval (default 900s)
+ *   lockstep-ingest serve    [--interval <sec>] [--fast-interval <sec>]
+ *       two loops: the sweep (default 900s) + the gateway fast loop (default 60s) that drains live
+ *       Slack-event units and executes scheduled jobs (expiry / weekly digests / writeback drain)
  *
  * Env: LOCKSTEP_API_URL, LOCKSTEP_INGEST_TOKEN, COMPOSIO_API_KEY, ANTHROPIC_API_KEY,
  *      SLACK_BOT_TOKEN (ratification digests — optional; digests stay queued without it).
@@ -147,14 +150,14 @@ async function sweepOnce(): Promise<void> {
   } catch (e) {
     console.error("[docs] doc sweep error:", e);
   }
-  // v3 periodic jobs — expiry (idempotent, only past-due) + weekly digest (idempotent per ISO week).
-  try {
-    const exp = await ls.runExpiry();
-    if (exp.expired > 0) console.log(`[expiry] ${exp.expired} constraint(s) expired, ${exp.conflictsDismissed} conflict(s) dismissed`);
-    const wk = await ls.runWeeklyDigests();
-    if (wk.enqueued > 0) console.log(`[weekly] ${wk.enqueued} digest(s) enqueued`);
-  } catch (e) {
-    console.error("[jobs] periodic job error:", e);
+  // Gateway note: expiry/weekly-digest/writeback-drain moved OFF the sweep tick onto scheduled_jobs
+  // (the fast loop claims them) — a one-shot `sweep` still drains once below so it stays self-contained.
+  if (process.argv[2] === "sweep") {
+    try {
+      await runWritebackDrain(ls, useStub);
+    } catch (e) {
+      console.error("[writebacks] drain error:", e);
+    }
   }
   console.log("[sweep] done");
 }
@@ -238,8 +241,16 @@ async function docSweepOnce(
       );
     }
   }
-  // Drain queued write-backs. In stub mode everything routes to one StubConnector (assertable, no network).
-  const stubConnector = opts.useStub ? new StubConnector() : null;
+}
+
+/**
+ * Drain queued write-backs (Notion conflict comments, Slack digests/alerts). Gateway: runs on the
+ * `writeback_drain` scheduled job in the fast loop — no longer coupled to document work existing
+ * (the old placement inside docSweepOnce meant orgs with zero doc connections NEVER drained).
+ * In stub mode everything routes to one StubConnector (assertable, no network).
+ */
+async function runWritebackDrain(ls: LockstepClient, useStub: boolean): Promise<void> {
+  const stubConnector = useStub ? new StubConnector() : null;
   const { posted, failed } = await drainWritebacks(ls, {
     connectorFor: (row) => {
       if (stubConnector) return stubConnector;
@@ -252,20 +263,89 @@ async function docSweepOnce(
     slackBotToken: env("SLACK_BOT_TOKEN") || undefined,
     log: (m) => console.log(m),
   });
-  console.log(`[docs] writebacks posted=${posted} failed=${failed}`);
+  if (posted + failed > 0) console.log(`[writebacks] posted=${posted} failed=${failed}`);
+}
+
+/**
+ * The fast loop (gateway): drain live Slack-event units (≈real-time distillation instead of ≤15 min),
+ * then claim + execute due scheduled jobs. Every step is try/caught — one failure never kills a loop.
+ */
+async function fastTick(ls: LockstepClient, useStub: boolean, useHaiku: boolean): Promise<void> {
+  try {
+    const r = await drainEvents(ls, {
+      fetcherFor: (b) => {
+        if (useStub) return new StubConnector();
+        if (b.tool !== "slack" || !b.connectedAccountId) return null;
+        return composio(b.entity, "slack");
+      },
+      useHaiku,
+      log: (m) => console.log(m),
+    });
+    if (r.processed + r.failed > 0) console.log(`[events] processed=${r.processed} proposed=${r.proposed} failed=${r.failed}`);
+  } catch (e) {
+    console.error("[events] drain error:", e);
+  }
+
+  let jobs: Array<{ id: string; kind: string }> = [];
+  try {
+    jobs = await ls.claimJobs();
+  } catch (e) {
+    console.error("[jobs] claim error:", e);
+  }
+  for (const job of jobs) {
+    try {
+      switch (job.kind) {
+        case "expiry": {
+          const exp = await ls.runExpiry();
+          if (exp.expired > 0) console.log(`[expiry] ${exp.expired} constraint(s) expired, ${exp.conflictsDismissed} conflict(s) dismissed`);
+          break;
+        }
+        case "weekly_digest": {
+          const wk = await ls.runWeeklyDigests();
+          if (wk.enqueued > 0) console.log(`[weekly] ${wk.enqueued} digest(s) enqueued`);
+          break;
+        }
+        case "writeback_drain":
+          await runWritebackDrain(ls, useStub);
+          break;
+        default:
+          console.log(`[jobs] unknown kind ${job.kind} — completing as error`);
+          await ls.completeJob(job.id, false, `unknown kind ${job.kind}`);
+          continue;
+      }
+      await ls.completeJob(job.id, true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[jobs] ${job.kind} failed:`, msg);
+      await ls.completeJob(job.id, false, msg).catch(() => {});
+    }
+  }
 }
 
 async function cmdServe(): Promise<void> {
   const interval = Number(flag("interval") ?? 900) * 1000;
-  console.log(`[serve] sweeping every ${interval / 1000}s`);
-  for (;;) {
-    try {
-      await sweepOnce();
-    } catch (e) {
-      console.error("[serve] sweep error:", e);
+  const fastInterval = Number(flag("fast-interval") ?? 60) * 1000;
+  const ls = client();
+  const useStub = has("stub");
+  const useHaiku = !has("no-haiku");
+  console.log(`[serve] sweeping every ${interval / 1000}s; fast loop (events + jobs) every ${fastInterval / 1000}s`);
+  const sweepLoop = (async () => {
+    for (;;) {
+      try {
+        await sweepOnce();
+      } catch (e) {
+        console.error("[serve] sweep error:", e);
+      }
+      await new Promise((r) => setTimeout(r, interval));
     }
-    await new Promise((r) => setTimeout(r, interval));
-  }
+  })();
+  const fastLoop = (async () => {
+    for (;;) {
+      await fastTick(ls, useStub, useHaiku);
+      await new Promise((r) => setTimeout(r, fastInterval));
+    }
+  })();
+  await Promise.all([sweepLoop, fastLoop]);
 }
 
 async function main(): Promise<void> {

@@ -19,6 +19,11 @@ export class StubConnector implements SourceConnector, DocumentConnector {
     return this.units.filter((u) => u.sourceRef === sourceRef);
   }
 
+  /** Gateway event drain: resolve one thread unit by its root ts (mirrors ComposioConnector). */
+  async fetchThreadUnit(channel: string, threadTs: string): Promise<Unit | null> {
+    return this.units.find((u) => u.sourceRef === channel && u.externalId === `${channel}/${threadTs}`) ?? null;
+  }
+
   /* ── DocumentConnector — the guest-checkout PRD fixture, shared with eval (golden-prd.ts) ── */
 
   async listDocuments(containerRef: string, _statusProperty: string | null): Promise<DocMeta[]> {

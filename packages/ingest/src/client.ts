@@ -172,13 +172,43 @@ export class LockstepClient {
     await this.req("POST", `/internal/writebacks/${id}/done`, { ok, resultRef });
   }
 
-  /** Expire past-due launch gates (FR-CORE-11) — called each serve tick. */
+  /** Expire past-due launch gates (FR-CORE-11) — executed via the `expiry` scheduled job. */
   async runExpiry(): Promise<{ expired: number; conflictsDismissed: number }> {
     return this.req("POST", "/internal/expiry/run");
   }
 
-  /** Enqueue weekly operator digests (idempotent per ISO week) — called each serve tick. */
+  /** Enqueue weekly operator digests (idempotent per ISO week) — via the `weekly_digest` job. */
   async runWeeklyDigests(): Promise<{ enqueued: number }> {
     return this.req("POST", "/internal/digests/weekly/run");
   }
+
+  /* ── gateway: Slack event drain + scheduled jobs (the fast loop) ── */
+
+  async getPendingEvents(): Promise<PendingEventBatch[]> {
+    const r = await this.req<{ batches: PendingEventBatch[] }>("GET", "/ingest/events/pending");
+    return r.batches;
+  }
+
+  async markEventsDone(ids: string[], ok: boolean): Promise<void> {
+    if (ids.length === 0) return;
+    await this.req("POST", "/ingest/events/done", { ids, ok });
+  }
+
+  async claimJobs(): Promise<Array<{ id: string; kind: string }>> {
+    const r = await this.req<{ jobs: Array<{ id: string; kind: string }> }>("POST", "/internal/jobs/claim");
+    return r.jobs;
+  }
+
+  async completeJob(id: string, ok: boolean, error?: string): Promise<void> {
+    await this.req("POST", `/internal/jobs/${id}/complete`, { ok, error });
+  }
+}
+
+export interface PendingEventBatch {
+  orgId: string;
+  connectionId: string;
+  tool: string;
+  entity: string;
+  connectedAccountId: string | null;
+  events: Array<{ id: string; projectId: string; sourceRef: string; threadKey: string; threadTs: string }>;
 }
