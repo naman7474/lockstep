@@ -28,6 +28,13 @@ import {
 } from "../graph/graph-service.js";
 import { canRatifyTx, projectVisibility, projectArchived } from "../auth/permissions.js";
 import { prepareScopeSimilarity, embedTexts, EMBED_FUSE_MIN, EMBED_SUPERSEDE_MAX, type Embedder } from "./embeddings.js";
+import {
+  semanticDecisionScores,
+  hybridRank,
+  MIN_QUERY_SIM,
+  SEMANTIC_TOP_K,
+  type RetrievalEmbedders,
+} from "./retrieval.js";
 import { sourceDocuments, conflicts, writebacks } from "../db/schema.js";
 import { notifyConflictTx } from "../routing/routing-engine.js";
 import { inArray } from "drizzle-orm";
@@ -2255,16 +2262,18 @@ export async function getProductContext(
   orgId: string,
   projectId: string,
   scope: string,
+  embedders?: RetrievalEmbedders,
 ): Promise<{
   scope: string;
   constraints: ScopedConstraint[];
   governedSurfaces: string[];
 }> {
-  return withOrg(orgId, async (tx) => {
+  const FREE_TEXT_CAP = 30;
+  // Phase 1 tx: structural branches complete here; the free-text branch only gathers candidates
+  // (semantic scoring is HTTP and must happen outside any transaction — embeddings.ts:10-12).
+  const phase1 = await withOrg(orgId, async (tx) => {
     const isCapability = scope.startsWith("feature:") || scope.startsWith("metric:");
     const isSurface = /^(http:|proto:|gql:|pkg:)/.test(scope);
-    let capRefs: string[] = [];
-    let governedSurfaces: string[] = [];
     const decRows = await tx
       .select()
       .from(decisions)
@@ -2272,42 +2281,78 @@ export async function getProductContext(
         and(eq(decisions.projectId, projectId), eq(decisions.origin, "document"), eq(decisions.status, "binding")),
       );
 
-    let matched: typeof decRows;
-    if (isCapability) {
-      capRefs = [scope];
-      governedSurfaces = await capabilitySurfacesTx(tx, projectId, scope);
-      matched = decRows.filter((d) => d.scopeKind === "capability" && d.scopeRef === scope);
-    } else if (isSurface) {
-      capRefs = await surfaceCapabilitiesTx(tx, projectId, scope);
-      governedSurfaces = [scope];
-      matched = decRows.filter(
-        (d) =>
-          (d.scopeKind === "surface" && d.scopeRef === scope) ||
-          (d.scopeKind === "capability" && capRefs.includes(d.scopeRef)),
-      );
-    } else {
-      // Free text: substring over rule text / scope ref (like queryLedger).
-      const needle = scope.toLowerCase();
-      const hits = [];
-      for (const d of decRows) {
-        const v = (
-          await tx
+    if (isCapability || isSurface) {
+      let governedSurfaces: string[];
+      let matched: typeof decRows;
+      if (isCapability) {
+        governedSurfaces = await capabilitySurfacesTx(tx, projectId, scope);
+        matched = decRows.filter((d) => d.scopeKind === "capability" && d.scopeRef === scope);
+      } else {
+        const capRefs = await surfaceCapabilitiesTx(tx, projectId, scope);
+        governedSurfaces = [scope];
+        matched = decRows.filter(
+          (d) =>
+            (d.scopeKind === "surface" && d.scopeRef === scope) ||
+            (d.scopeKind === "capability" && capRefs.includes(d.scopeRef)),
+        );
+      }
+      const constraints: ScopedConstraint[] = [];
+      for (const d of matched) {
+        const detail = await constraintDetailTx(tx, d);
+        if (detail) constraints.push(detail);
+      }
+      constraints.sort((a, b) => b.impact - a.impact);
+      return { structural: true as const, result: { scope, constraints, governedSurfaces } };
+    }
+
+    // Free text: batched substring pass (was an N+1 per-decision version fetch).
+    const needle = scope.toLowerCase();
+    const versions =
+      decRows.length > 0
+        ? await tx
             .select()
             .from(decisionVersions)
-            .where(and(eq(decisionVersions.decisionId, d.id), eq(decisionVersions.version, d.currentVersion)))
-            .limit(1)
-        )[0];
-        if (`${d.scopeRef} ${v?.ruleText ?? ""}`.toLowerCase().includes(needle)) hits.push(d);
-      }
-      matched = hits;
-    }
+            .where(
+              inArray(
+                decisionVersions.decisionId,
+                decRows.map((d) => d.id),
+              ),
+            )
+        : [];
+    const textByKey = new Map(versions.map((v) => [`${v.decisionId}:${v.version}`, v.ruleText]));
+    const substringIds = new Set(
+      decRows
+        .filter((d) => `${d.scopeRef} ${textByKey.get(`${d.id}:${d.currentVersion}`) ?? ""}`.toLowerCase().includes(needle))
+        .map((d) => d.id),
+    );
+    return { structural: false as const, candidateIds: new Set(decRows.map((d) => d.id)), substringIds };
+  });
+  if (phase1.structural) return phase1.result;
+
+  // Semantic union restricted to the constraint corpus (candidateIds) — HTTP outside any tx.
+  const scores = await semanticDecisionScores(orgId, projectId, scope, embedders, phase1.candidateIds);
+  const matchedIds = new Set(phase1.substringIds);
+  if (scores) {
+    const semantic = [...scores.entries()]
+      .filter(([id, s]) => !matchedIds.has(id) && s >= MIN_QUERY_SIM)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, SEMANTIC_TOP_K);
+    for (const [id] of semantic) matchedIds.add(id);
+  }
+
+  // Phase 2 tx: resolve constraint details for the matched set. Sort stays impact-desc (contract).
+  return withOrg(orgId, async (tx) => {
+    const matched =
+      matchedIds.size > 0
+        ? await tx.select().from(decisions).where(inArray(decisions.id, [...matchedIds]))
+        : [];
     const constraints: ScopedConstraint[] = [];
     for (const d of matched) {
       const detail = await constraintDetailTx(tx, d);
       if (detail) constraints.push(detail);
     }
     constraints.sort((a, b) => b.impact - a.impact);
-    return { scope, constraints, governedSurfaces };
+    return { scope, constraints: constraints.slice(0, FREE_TEXT_CAP), governedSurfaces: [] };
   });
 }
 
@@ -2427,38 +2472,48 @@ export async function reconcile(
   });
 }
 
-/** Retrieval for query(): the agent synthesizes the answer; the core only returns rows. */
+/**
+ * Retrieval for query(): the agent synthesizes the answer; the core only returns rows.
+ * Hybrid ranking: substring hits always included and first; cosine adds semantic neighbors when
+ * embeddings are available (null ⇒ substring-only, the additive-layer doctrine). Rejected decisions
+ * are excluded outright; superseded stay substring-matchable (history questions) but never semantic.
+ */
 export async function queryLedger(
   orgId: string,
   projectId: string,
   q: string,
+  opts?: { scope?: string; embedders?: RetrievalEmbedders },
 ): Promise<{ decisions: unknown[]; changes: unknown[]; answeredQuestions: unknown[] }> {
   const needle = q.toLowerCase();
-  return withOrg(orgId, async (tx) => {
-    const ds = await tx.select().from(decisions).where(eq(decisions.projectId, projectId));
-    const decRows = [];
-    for (const d of ds) {
-      const v = (
-        await tx
-          .select()
-          .from(decisionVersions)
-          .where(and(eq(decisionVersions.decisionId, d.id), eq(decisionVersions.version, d.currentVersion)))
-          .limit(1)
-      )[0];
-      const hay = `${d.scopeRef} ${v?.ruleText ?? ""}`.toLowerCase();
-      if (hay.includes(needle))
-        decRows.push({
-          scopeRef: d.scopeRef,
-          scopeKind: d.scopeKind,
-          status: d.status,
-          ruleText: v?.ruleText ?? "",
-          // v3: mark product constraints so the agent can distinguish ratified PRD rules from
-          // engineering decisions when it synthesizes the answer.
-          origin: d.origin,
-          isConstraint: d.origin === "document",
-          constraintKind: d.constraintKind,
-        });
-    }
+  const gathered = await withOrg(orgId, async (tx) => {
+    const ds = (await tx.select().from(decisions).where(eq(decisions.projectId, projectId))).filter(
+      (d) => d.status !== "rejected",
+    );
+    const versions =
+      ds.length > 0
+        ? await tx
+            .select()
+            .from(decisionVersions)
+            .where(
+              inArray(
+                decisionVersions.decisionId,
+                ds.map((d) => d.id),
+              ),
+            )
+        : [];
+    const textByKey = new Map(versions.map((v) => [`${v.decisionId}:${v.version}`, v.ruleText]));
+    const decRows = ds.map((d) => ({
+      id: d.id,
+      scopeRef: d.scopeRef,
+      scopeKind: d.scopeKind,
+      status: d.status,
+      ruleText: textByKey.get(`${d.id}:${d.currentVersion}`) ?? "",
+      // v3: mark product constraints so the agent can distinguish ratified PRD rules from
+      // engineering decisions when it synthesizes the answer.
+      origin: d.origin,
+      isConstraint: d.origin === "document",
+      constraintKind: d.constraintKind,
+    }));
     const changes = (
       await tx
         .select()
@@ -2473,6 +2528,18 @@ export async function queryLedger(
         .from(questions)
         .where(and(eq(questions.projectId, projectId), eq(questions.status, "answered")))
     ).filter((qq) => qq.body.toLowerCase().includes(needle));
-    return { decisions: decRows, changes, answeredQuestions };
+    return { decRows, changes, answeredQuestions };
   });
+
+  const substringIds = new Set(
+    gathered.decRows.filter((r) => `${r.scopeRef} ${r.ruleText}`.toLowerCase().includes(needle)).map((r) => r.id),
+  );
+  // HTTP happens here, outside any transaction (embeddings.ts:10-12 rule).
+  const scores = await semanticDecisionScores(orgId, projectId, q, opts?.embedders);
+  let ranked = hybridRank(gathered.decRows, substringIds, scores);
+  if (opts?.scope) {
+    // Scope boost, not a filter: rows on the asked-about scope float to the top.
+    ranked = [...ranked.filter((r) => r.scopeRef === opts.scope), ...ranked.filter((r) => r.scopeRef !== opts.scope)];
+  }
+  return { decisions: ranked, changes: gathered.changes, answeredQuestions: gathered.answeredQuestions };
 }

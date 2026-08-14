@@ -11,7 +11,7 @@
  * gather mates + cache, the Voyage call in the open, then a short write tx to upsert the cache.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { withOrg } from "../db/rls.js";
+import { withOrg, type Tx } from "../db/rls.js";
 import { decisions, decisionVersions, decisionEmbeddings, ingestArtifacts } from "../db/schema.js";
 import { env } from "../env.js";
 
@@ -29,14 +29,14 @@ const TIMEOUT_MS = 10_000;
 
 export type Embedder = (texts: string[]) => Promise<number[][] | null>;
 
-/** Batched Voyage embedding call. Returns null (never throws) when the key is unset or the call fails. */
-export const embedTexts: Embedder = async (texts) => {
+/** Batched Voyage call. Returns null (never throws) when the key is unset or the call fails. */
+async function voyageEmbed(texts: string[], inputType: "document" | "query"): Promise<number[][] | null> {
   if (!env.VOYAGE_API_KEY || texts.length === 0) return null;
   try {
     const res = await fetch(VOYAGE_URL, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${env.VOYAGE_API_KEY}` },
-      body: JSON.stringify({ model: EMBED_MODEL, input: texts, input_type: "document" }),
+      body: JSON.stringify({ model: EMBED_MODEL, input: texts, input_type: inputType }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return null;
@@ -48,7 +48,38 @@ export const embedTexts: Embedder = async (texts) => {
   } catch {
     return null;
   }
-};
+}
+
+export const embedTexts: Embedder = (texts) => voyageEmbed(texts, "document");
+/** Query-side embeddings (Voyage's asymmetric convention) — used by retrieval, never cached. */
+export const embedQueryTexts: Embedder = (texts) => voyageEmbed(texts, "query");
+
+/**
+ * Single writer for the mutable embedding cache (the sanctioned append-only deviation): update in
+ * place when a row exists (version/model are staleness markers, not part of the key), insert otherwise.
+ */
+export async function upsertEmbeddingsTx(
+  tx: Tx,
+  orgId: string,
+  rows: Array<{ decisionId: string; version: number; embedding: number[]; existingId?: string }>,
+): Promise<void> {
+  for (const r of rows) {
+    if (r.existingId) {
+      await tx
+        .update(decisionEmbeddings)
+        .set({ version: r.version, model: EMBED_MODEL, embedding: r.embedding, updatedAt: new Date() })
+        .where(eq(decisionEmbeddings.id, r.existingId));
+    } else {
+      await tx.insert(decisionEmbeddings).values({
+        orgId,
+        decisionId: r.decisionId,
+        version: r.version,
+        model: EMBED_MODEL,
+        embedding: r.embedding,
+      });
+    }
+  }
+}
 
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) return 0;
@@ -151,23 +182,16 @@ export async function prepareScopeSimilarity(
   // 3) short write tx: upsert the cache for what we just embedded.
   if (toEmbed.length > 0) {
     await withOrg(orgId, async (tx) => {
-      for (const m of toEmbed) {
-        const existing = cacheByDecision.get(m.id);
-        if (existing) {
-          await tx
-            .update(decisionEmbeddings)
-            .set({ version: m.version, model: EMBED_MODEL, embedding: mateVec.get(m.id)!, updatedAt: new Date() })
-            .where(eq(decisionEmbeddings.id, existing.id));
-        } else {
-          await tx.insert(decisionEmbeddings).values({
-            orgId,
-            decisionId: m.id,
-            version: m.version,
-            model: EMBED_MODEL,
-            embedding: mateVec.get(m.id)!,
-          });
-        }
-      }
+      await upsertEmbeddingsTx(
+        tx,
+        orgId,
+        toEmbed.map((m) => ({
+          decisionId: m.id,
+          version: m.version,
+          embedding: mateVec.get(m.id)!,
+          existingId: cacheByDecision.get(m.id)?.id,
+        })),
+      );
     });
   }
 

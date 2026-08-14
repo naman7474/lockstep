@@ -19,6 +19,7 @@ import {
   projectPrinciples,
   getProductContext,
 } from "../../ledger/ledger-service.js";
+import { getDecisionPack, getDecisionPackHash } from "../../ledger/decision-pack.js";
 import { whoowns, refreshOwnership } from "../../graph/ownership-service.js";
 import { readInbox, peekInbox, ackInbox, peekInboxByRemote } from "../../inbox/inbox-service.js";
 import { productLayerOn } from "../guards.js";
@@ -139,10 +140,21 @@ export async function ledgerRoutes(app: FastifyInstance): Promise<void> {
     const c = await ctx(req, reply);
     if (!c) return;
     const p = await projectPrinciples(c.orgId, c.projectId);
+    // Additive staleness signal: the current compiled decision-pack hash. The CLI compares it to
+    // the locally-written pack's embedded hash and nudges (read-only) when they diverge.
+    const pack = { hash: await getDecisionPackHash(c.orgId, c.projectId) };
     if (!(await productLayerOn(c.orgId, c.projectId)))
-      return { constraints: [], overflow: 0, principles: p.principles, principlesOverflow: p.overflow };
+      return { constraints: [], overflow: 0, principles: p.principles, principlesOverflow: p.overflow, pack };
     const b = await briefingConstraints(c.orgId, c.projectId, c.repoId);
-    return { ...b, principles: p.principles, principlesOverflow: p.overflow };
+    return { ...b, principles: p.principles, principlesOverflow: p.overflow, pack };
+  });
+
+  // decision-pack — the compiled per-project SKILL.md (settled decisions only, uncapped).
+  // Written to disk by `lockstep pack` / the refresh_decision_pack MCP tool, never by hooks.
+  app.get("/decision-pack", async (req, reply) => {
+    const c = await ctx(req, reply);
+    if (!c) return;
+    return getDecisionPack(c.orgId, c.projectId);
   });
 
   // get_product_context(scope) — pull-based depth: full constraint set for a capability/surface/text.
@@ -237,13 +249,13 @@ export async function ledgerRoutes(app: FastifyInstance): Promise<void> {
     return ackInbox(c.orgId, { memberId: c.memberId, repoId: c.repoId, projectId: c.projectId }, b?.itemIds);
   });
 
-  // query(question, scope?)
+  // query(question, scope?) — scope is a rank boost, not a filter
   app.post("/query", async (req, reply) => {
     const c = await ctx(req, reply);
     if (!c) return;
-    const b = req.body as { question?: string };
+    const b = req.body as { question?: string; scope?: string };
     if (!b?.question) return reply.code(400).send({ error: "question required" });
-    return queryLedger(c.orgId, c.projectId, b.question);
+    return queryLedger(c.orgId, c.projectId, b.question, { scope: b.scope });
   });
 
   // whoowns(path)
