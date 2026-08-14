@@ -43,7 +43,7 @@
     "test": "find src -name '*.test.ts' | xargs node --import tsx --test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
