@@ -23,7 +23,7 @@
     "@anthropic-ai/sdk": "latest"
   },
   "optionalDependencies": {
-    "@composio/core": "0.13.1"
+    "@composio/core": "0.16.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

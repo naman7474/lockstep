@@ -17,7 +17,7 @@
     "coverage": "sh -c 'export LOCKSTEP_INGEST_TOKEN=test-ingest-secret LOCKSTEP_SLACK_SIGNING_SECRET=test-slack-secret SLACK_BOT_TOKEN=xoxb-test; find src -name \"*.test.ts\" | xargs node --import tsx --test --test-concurrency=1 --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/ingest/ingest-service.ts\" --test-coverage-include=\"src/graph/graph-service.ts\" --test-coverage-include=\"src/ledger/ledger-service.ts\" --test-coverage-include=\"src/api/routes/ingest.ts\" --test-coverage-include=\"src/documents/document-service.ts\" --test-coverage-include=\"src/documents/reconcile-service.ts\" --test-coverage-include=\"src/documents/features-service.ts\" --test-coverage-include=\"src/documents/weekly-digest.ts\" --test-coverage-include=\"src/documents/insights-service.ts\" --test-coverage-include=\"src/ledger/expiry-job.ts\" --test-coverage-include=\"src/api/routes/documents.ts\" --test-coverage-include=\"src/api/routes/slack.ts\" --test-coverage-include=\"src/api/guards.ts\" --test-coverage-include=\"src/auth/permissions.ts\" --test-coverage-include=\"src/auth/slack-verify.ts\" --test-coverage-include=\"src/ledger/embeddings.ts\" --test-coverage-include=\"src/inbox/inbox-service.ts\" --test-coverage-include=\"src/auth/auth-service.ts\" --test-coverage-exclude=\"**/*.test.ts\"'"
   },
   "dependencies": {
-    "@composio/core": "0.13.1",
+    "@composio/core": "0.16.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.1.0",
     "postgres": "^3.4.5",
