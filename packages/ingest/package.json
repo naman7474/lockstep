@@ -20,7 +20,7 @@
     "coverage": "find src -name '*.test.ts' | xargs node --import tsx --test --test-force-exit --experimental-test-coverage --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='**/index.ts' --test-coverage-exclude='**/client.ts' --test-coverage-exclude='**/connectors/ComposioConnector.ts' --test-coverage-exclude='**/connectors/GDocsConnector.ts' --test-coverage-exclude='**/connectors/ConfluenceConnector.ts' --test-coverage-exclude='**/connectors/NangoConnector.ts' --test-coverage-exclude='**/slack/send.ts' --test-coverage-exclude='**/distill/llm.ts' --test-coverage-exclude='**/distill/extract.ts' --test-coverage-exclude='**/distill/recall.ts' --test-coverage-exclude='**/eval/**'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "latest"
+    "@anthropic-ai/sdk": "^0.117.1"
   },
   "optionalDependencies": {
     "@composio/core": "0.13.1"
